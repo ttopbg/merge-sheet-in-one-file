@@ -88,6 +88,21 @@ def merge_sheets(file_bytes: bytes) -> tuple[pd.DataFrame, list[str]]:
 
     merged = pd.concat(frames, ignore_index=True, sort=False)
 
+    # Định dạng cột Ngày sinh thành dd/mm/yyyy (nếu có)
+    if "Ngày sinh" in merged.columns:
+        def fmt_date(val):
+            if pd.isna(val) or str(val).strip() == "":
+                return val
+            # Nếu đã là datetime/Timestamp
+            if hasattr(val, "strftime"):
+                return val.strftime("%d/%m/%Y")
+            # Nếu là chuỗi, thử parse
+            try:
+                return pd.to_datetime(val, dayfirst=True).strftime("%d/%m/%Y")
+            except Exception:
+                return val  # giữ nguyên nếu không parse được
+        merged["Ngày sinh"] = merged["Ngày sinh"].apply(fmt_date)
+
     # Đảm bảo cột "Giới tính" luôn tồn tại (để trống nếu không có trong file gốc)
     if "Giới tính" not in merged.columns:
         merged["Giới tính"] = ""
@@ -110,7 +125,7 @@ def merge_sheets(file_bytes: bytes) -> tuple[pd.DataFrame, list[str]]:
 
 # ─── Giao diện Streamlit ───────────────────────────────────────────────────────
 st.set_page_config(page_title="Gộp Sheet Excel", page_icon="🐍", layout="centered")
-st.title("🙃 Gộp nhiều Sheet Excel trong 1 file")
+st.title("🙃 Gộp nhiều Sheet trong 1 file Excel")
 st.caption("Tự động nhận diện & chuẩn hoá cột: Lớp, Họ tên, Ngày sinh, Giới tính…")
 
 uploaded = st.file_uploader("⬆️ Tải lên file Excel (.xlsx)", type=["xlsx", "xls"])
