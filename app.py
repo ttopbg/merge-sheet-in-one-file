@@ -6,17 +6,20 @@ from rapidfuzz import process, fuzz
 
 # ─── Cấu hình cột chuẩn & alias ───────────────────────────────────────────────
 COLUMN_ALIASES = {
+    "Họ và tên":  ["họ và tên", "ho va ten", "họ tên", "ho ten", "tên", "ten", "full name", "name", "họ & tên"],
     "Lớp":        ["lớp", "lop", "lớp học", "lop hoc", "class", "khối", "khoi"],
-    "Họ tên":     ["họ tên", "ho ten", "họ và tên", "ho va ten", "tên", "ten", "full name", "name", "họ & tên"],
+    "Giới tính":  ["giới tính", "gioi tinh", "gender", "sex"],
     "Ngày sinh":  ["ngày sinh", "ngay sinh", "ngày tháng năm sinh", "ngay thang nam sinh",
                    "dob", "date of birth", "birthday", "sinh ngày"],
-    "Giới tính":  ["giới tính", "gioi tinh", "gender", "sex"],
     "Địa chỉ":    ["địa chỉ", "dia chi", "address", "nơi ở", "noi o"],
     "Dân tộc":    ["dân tộc", "dan toc", "ethnicity"],
     "Mã HS":      ["mã hs", "ma hs", "mã học sinh", "ma hoc sinh", "student id", "id"],
     "Điện thoại": ["điện thoại", "dien thoai", "phone", "sđt", "sdt", "số điện thoại"],
     "Email":      ["email", "e-mail", "mail"],
 }
+
+# Thứ tự cột ưu tiên trong file output
+PRIORITY_COLS = ["Họ và tên", "Lớp", "Giới tính", "Ngày sinh"]
 
 def normalize(text: str) -> str:
     """Chuyển về chữ thường, bỏ khoảng trắng thừa."""
@@ -85,17 +88,29 @@ def merge_sheets(file_bytes: bytes) -> tuple[pd.DataFrame, list[str]]:
 
     merged = pd.concat(frames, ignore_index=True, sort=False)
 
-    # Sắp xếp cột: cột chuẩn lên trước, cột khác theo sau
-    standard_order = list(COLUMN_ALIASES.keys())
-    present_standard = [c for c in standard_order if c in merged.columns]
-    other_cols = [c for c in merged.columns if c not in present_standard and c != "__sheet__"]
-    merged = merged[present_standard + other_cols + (["__sheet__"] if "__sheet__" in merged.columns else [])]
+    # Đảm bảo cột "Giới tính" luôn tồn tại (để trống nếu không có trong file gốc)
+    if "Giới tính" not in merged.columns:
+        merged["Giới tính"] = ""
+
+    # Xây dựng thứ tự cột đầu ra:
+    # 1. Các cột ưu tiên: Họ và tên, Lớp, Giới tính, Ngày sinh (luôn đứng đầu)
+    # 2. Các cột chuẩn khác có trong dữ liệu
+    # 3. Các cột không thuộc chuẩn (giữ nguyên từ file gốc)
+    all_standard = list(COLUMN_ALIASES.keys())
+    remaining_standard = [c for c in all_standard if c not in PRIORITY_COLS and c in merged.columns]
+    other_cols = [c for c in merged.columns if c not in all_standard and c != "__sheet__"]
+
+    final_order = PRIORITY_COLS + remaining_standard + other_cols
+    if "__sheet__" in merged.columns:
+        final_order.append("__sheet__")
+
+    merged = merged[final_order]
 
     return merged, logs
 
 # ─── Giao diện Streamlit ───────────────────────────────────────────────────────
-st.set_page_config(page_title="Gộp Sheet Excel", page_icon="📊", layout="centered")
-st.title("📊 Gộp nhiều Sheet Excel thành 1")
+st.set_page_config(page_title="Gộp Sheet Excel", page_icon="🐍", layout="centered")
+st.title("🙃 Gộp nhiều Sheet Excel trong 1 file")
 st.caption("Tự động nhận diện & chuẩn hoá cột: Lớp, Họ tên, Ngày sinh, Giới tính…")
 
 uploaded = st.file_uploader("⬆️ Tải lên file Excel (.xlsx)", type=["xlsx", "xls"])
