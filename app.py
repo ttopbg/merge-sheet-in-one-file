@@ -4,7 +4,7 @@ import io
 import os
 from rapidfuzz import process, fuzz
 
-# ─── Cấu hình cột chuẩn & alias ───────────────────────────────────────────────
+# ─── Cấu hình cột chuẩn & alias ──────────────────────────────────────────
 COLUMN_ALIASES = {
     "Họ và tên":  ["họ và tên", "ho va ten", "họ tên", "ho ten", "tên", "ten", "full name", "name", "họ & tên"],
     "Lớp":        ["lớp", "lop", "lớp học", "lop hoc", "class", "khối", "khoi"],
