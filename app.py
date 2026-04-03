@@ -54,8 +54,10 @@ def safe_str(series: pd.Series) -> pd.Series:
     return series.astype(str).replace({"nan": "", "NaT": "", "None": ""})
 
 
-def fmt_date(val: str) -> str:
-    if not val or val.strip() == "":
+def fmt_date(val) -> str:
+    val = str(val) if val is not None else ""
+    val = val.strip()
+    if val in ("", "nan", "NaT", "None"):
         return ""
     try:
         return pd.to_datetime(val, dayfirst=True).strftime("%d/%m/%Y")
