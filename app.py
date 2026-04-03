@@ -159,8 +159,8 @@ def merge_sheets(file_bytes):
 
 
 # ─── Giao diện Streamlit ───────────────────────────────────────────────────────
-st.set_page_config(page_title="Gộp Sheet Excel", page_icon="🐍", layout="centered")
-st.title("🙃 Gộp nhiều Sheet trong 1 file Excel")
+st.set_page_config(page_title="Gộp Sheet Excel", page_icon="📊", layout="centered")
+st.title("📊 Gộp nhiều Sheet Excel thành 1")
 st.caption("Tự động nhận diện & chuẩn hoá cột: Họ và tên, Lớp, Giới tính, Ngày sinh…")
 
 uploaded = st.file_uploader("⬆️ Tải lên file Excel (.xlsx)", type=["xlsx", "xls"])
