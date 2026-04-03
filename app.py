@@ -19,7 +19,7 @@ COLUMN_ALIASES = {
 }
 
 # Thứ tự cột ưu tiên trong file output
-PRIORITY_COLS = ["Họ và tên", "Lớp", "Giới tính", "Ngày sinh"]
+PRIORITY_COLS = ["Họ và tên", "Lớp mới", "Lớp", "Giới tính", "Ngày sinh"]
 
 
 def normalize(text: str) -> str:
@@ -130,6 +130,12 @@ def merge_sheets(file_bytes):
     # Định dạng Ngày sinh → dd/mm/yyyy
     if "Ngày sinh" in merged.columns:
         merged["Ngày sinh"] = merged["Ngày sinh"].apply(fmt_date)
+
+    # Tạo cột "Lớp mới" từ tên sheet (lưu trong __sheet__)
+    if "__sheet__" in merged.columns:
+        merged["Lớp mới"] = merged["__sheet__"]
+    else:
+        merged["Lớp mới"] = ""
 
     # Đảm bảo cột Giới tính luôn tồn tại
     if "Giới tính" not in merged.columns:
