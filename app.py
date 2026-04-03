@@ -122,10 +122,13 @@ def merge_sheets(file_bytes):
 
     merged = pd.concat(frames, ignore_index=True, sort=False)
 
-    # Ép lại object → str lần nữa sau concat (phòng mixed type)
+    # Dedup tên cột sau concat (các sheet khác nhau có thể tạo cột trùng)
+    merged.columns = dedup_columns(list(merged.columns))
+
+    # Ép tất cả cột không phải số về str để tránh mixed-type / datetime lỗi PyArrow
     for col in merged.columns:
-        if merged[col].dtype == object:
-            merged[col] = merged[col].astype(str).replace("nan", "")
+        if merged[col].dtype == object or str(merged[col].dtype).startswith("datetime"):
+            merged[col] = merged[col].astype(str).replace("nan", "").replace("NaT", "")
 
     # Định dạng Ngày sinh → dd/mm/yyyy
     if "Ngày sinh" in merged.columns:
