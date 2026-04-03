@@ -137,10 +137,11 @@ def merge_sheets(file_bytes):
 
     # Sắp xếp cột: priority → chuẩn còn lại → cột khác
     all_standard = list(COLUMN_ALIASES.keys())
+    present_priority = [c for c in PRIORITY_COLS if c in merged.columns]
     remaining_standard = [c for c in all_standard if c not in PRIORITY_COLS and c in merged.columns]
     other_cols = [c for c in merged.columns if c not in all_standard and c != "__sheet__"]
 
-    final_order = PRIORITY_COLS + remaining_standard + other_cols
+    final_order = present_priority + remaining_standard + other_cols
     if "__sheet__" in merged.columns:
         final_order.append("__sheet__")
 
