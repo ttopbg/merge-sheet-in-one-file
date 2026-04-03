@@ -4,7 +4,7 @@ import io
 import os
 from rapidfuzz import process, fuzz
 
-# ─── Cấu hình cột chuẩn & alias ──────────────────────────────────────────
+# ─── Cấu hình cột chuẩn & alias ───────────────────────────────────────────────
 COLUMN_ALIASES = {
     "Họ và tên":  ["họ và tên", "ho va ten", "họ tên", "ho ten", "tên", "ten", "full name", "name", "họ & tên"],
     "Lớp":        ["lớp", "lop", "lớp học", "lop hoc", "class", "khối", "khoi"],
@@ -21,24 +21,23 @@ COLUMN_ALIASES = {
 # Thứ tự cột ưu tiên trong file output
 PRIORITY_COLS = ["Họ và tên", "Lớp", "Giới tính", "Ngày sinh"]
 
+
 def normalize(text: str) -> str:
-    """Chuyển về chữ thường, bỏ khoảng trắng thừa."""
     return str(text).strip().lower()
 
-def map_column(col_name: str, threshold: int = 75) -> str | None:
-    """Trả về tên cột chuẩn nếu khớp, ngược lại None."""
+
+def map_column(col_name: str, threshold: int = 75):
     col_norm = normalize(col_name)
     for standard, aliases in COLUMN_ALIASES.items():
         if col_norm in aliases or col_norm == normalize(standard):
             return standard
-        # fuzzy match
-        match, score, _ = process.extractOne(col_norm, aliases, scorer=fuzz.token_sort_ratio)
-        if score >= threshold:
+        result = process.extractOne(col_norm, aliases, scorer=fuzz.token_sort_ratio)
+        if result and result[1] >= threshold:
             return standard
     return None
 
+
 def detect_header_row(df_raw: pd.DataFrame, max_scan: int = 10) -> int:
-    """Tìm hàng chứa header thực sự (có nhiều cột khớp alias nhất)."""
     best_row, best_score = 0, 0
     for i in range(min(max_scan, len(df_raw))):
         row = df_raw.iloc[i]
@@ -47,30 +46,65 @@ def detect_header_row(df_raw: pd.DataFrame, max_scan: int = 10) -> int:
             best_score, best_row = score, i
     return best_row
 
+
+def dedup_columns(cols):
+    """Đổi tên cột trùng thành col, col_2, col_3, ..."""
+    seen = {}
+    result = []
+    for c in cols:
+        if c not in seen:
+            seen[c] = 0
+            result.append(c)
+        else:
+            seen[c] += 1
+            result.append(f"{c}_{seen[c] + 1}")
+    return result
+
+
+def fmt_date(val):
+    if pd.isna(val) or str(val).strip() in ("", "nan"):
+        return ""
+    if hasattr(val, "strftime"):
+        return val.strftime("%d/%m/%Y")
+    try:
+        return pd.to_datetime(val, dayfirst=True).strftime("%d/%m/%Y")
+    except Exception:
+        return str(val)
+
+
 def read_sheet_smart(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
-    """Đọc 1 sheet, tự phát hiện header row, mapping cột chuẩn."""
     df_raw = xl.parse(sheet_name, header=None)
     header_row = detect_header_row(df_raw)
 
     df = xl.parse(sheet_name, header=header_row)
     df.columns = [str(c).strip() for c in df.columns]
 
-    # Đổi tên cột sang tên chuẩn
+    # Đổi tên cột sang tên chuẩn (mỗi chuẩn chỉ map 1 lần, tránh trùng)
     rename_map = {}
+    used_standards = set()
     for col in df.columns:
         standard = map_column(col)
-        if standard:
+        if standard and standard not in used_standards:
             rename_map[col] = standard
+            used_standards.add(standard)
 
     df = df.rename(columns=rename_map)
-    df["__sheet__"] = sheet_name  # dùng nội bộ để debug
 
-    # Bỏ các hàng hoàn toàn trống
+    # Xử lý tên cột trùng sau rename
+    df.columns = dedup_columns(list(df.columns))
+
+    df["__sheet__"] = sheet_name
     df = df.dropna(how="all")
+
+    # Ép object → str để tránh mixed-type lỗi PyArrow
+    for col in df.columns:
+        if df[col].dtype == object:
+            df[col] = df[col].astype(str).replace("nan", "")
+
     return df
 
-def merge_sheets(file_bytes: bytes) -> tuple[pd.DataFrame, list[str]]:
-    """Gộp tất cả sheet thành 1 DataFrame, chuẩn hoá cột."""
+
+def merge_sheets(file_bytes):
     xl = pd.ExcelFile(file_bytes)
     logs = []
     frames = []
@@ -88,29 +122,20 @@ def merge_sheets(file_bytes: bytes) -> tuple[pd.DataFrame, list[str]]:
 
     merged = pd.concat(frames, ignore_index=True, sort=False)
 
-    # Định dạng cột Ngày sinh thành dd/mm/yyyy (nếu có)
+    # Ép lại object → str lần nữa sau concat (phòng mixed type)
+    for col in merged.columns:
+        if merged[col].dtype == object:
+            merged[col] = merged[col].astype(str).replace("nan", "")
+
+    # Định dạng Ngày sinh → dd/mm/yyyy
     if "Ngày sinh" in merged.columns:
-        def fmt_date(val):
-            if pd.isna(val) or str(val).strip() == "":
-                return val
-            # Nếu đã là datetime/Timestamp
-            if hasattr(val, "strftime"):
-                return val.strftime("%d/%m/%Y")
-            # Nếu là chuỗi, thử parse
-            try:
-                return pd.to_datetime(val, dayfirst=True).strftime("%d/%m/%Y")
-            except Exception:
-                return val  # giữ nguyên nếu không parse được
         merged["Ngày sinh"] = merged["Ngày sinh"].apply(fmt_date)
 
-    # Đảm bảo cột "Giới tính" luôn tồn tại (để trống nếu không có trong file gốc)
+    # Đảm bảo cột Giới tính luôn tồn tại
     if "Giới tính" not in merged.columns:
         merged["Giới tính"] = ""
 
-    # Xây dựng thứ tự cột đầu ra:
-    # 1. Các cột ưu tiên: Họ và tên, Lớp, Giới tính, Ngày sinh (luôn đứng đầu)
-    # 2. Các cột chuẩn khác có trong dữ liệu
-    # 3. Các cột không thuộc chuẩn (giữ nguyên từ file gốc)
+    # Sắp xếp cột: priority → chuẩn còn lại → cột khác
     all_standard = list(COLUMN_ALIASES.keys())
     remaining_standard = [c for c in all_standard if c not in PRIORITY_COLS and c in merged.columns]
     other_cols = [c for c in merged.columns if c not in all_standard and c != "__sheet__"]
@@ -120,13 +145,13 @@ def merge_sheets(file_bytes: bytes) -> tuple[pd.DataFrame, list[str]]:
         final_order.append("__sheet__")
 
     merged = merged[final_order]
-
     return merged, logs
+
 
 # ─── Giao diện Streamlit ───────────────────────────────────────────────────────
 st.set_page_config(page_title="Gộp Sheet Excel", page_icon="🐍", layout="centered")
 st.title("🙃 Gộp nhiều Sheet trong 1 file Excel")
-st.caption("Tự động nhận diện & chuẩn hoá cột: Lớp, Họ tên, Ngày sinh, Giới tính…")
+st.caption("Tự động nhận diện & chuẩn hoá cột: Họ và tên, Lớp, Giới tính, Ngày sinh…")
 
 uploaded = st.file_uploader("⬆️ Tải lên file Excel (.xlsx)", type=["xlsx", "xls"])
 
@@ -140,7 +165,6 @@ if uploaded:
         file_bytes = uploaded.read()
         merged_df, logs = merge_sheets(io.BytesIO(file_bytes))
 
-    # Log chi tiết
     with st.expander("🔍 Chi tiết từng sheet", expanded=False):
         for log in logs:
             st.markdown(log)
@@ -148,13 +172,11 @@ if uploaded:
     if merged_df.empty:
         st.error("Không đọc được dữ liệu từ file. Vui lòng kiểm tra lại.")
     else:
-        # Ẩn cột nội bộ khi hiển thị
         display_df = merged_df.drop(columns=["__sheet__"], errors="ignore")
 
         st.success(f"✅ Gộp thành công **{len(display_df)} dòng**, **{len(display_df.columns)} cột**")
         st.dataframe(display_df, use_container_width=True)
 
-        # Xuất Excel
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
             display_df.to_excel(writer, index=False, sheet_name="Đã gộp")
