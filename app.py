@@ -7,10 +7,11 @@ from rapidfuzz import process, fuzz
 # ─── Cấu hình cột chuẩn & alias ───────────────────────────────────────────────
 COLUMN_ALIASES = {
     "Họ và tên":  ["họ và tên", "ho va ten", "họ tên", "ho ten", "tên", "ten", "full name", "name", "họ & tên"],
-    "Lớp":        ["lớp", "lop", "lớp học", "lop hoc", "class", "khối", "khoi"],
+    "Lớp mới":    [],  # cột tạo tự động từ tên sheet, không map từ file
     "Giới tính":  ["giới tính", "gioi tinh", "gender", "sex"],
     "Ngày sinh":  ["ngày sinh", "ngay sinh", "ngày tháng năm sinh", "ngay thang nam sinh",
                    "dob", "date of birth", "birthday", "sinh ngày"],
+    "Lớp":        ["lớp", "lop", "lớp học", "lop hoc", "class", "khối", "khoi"],
     "Địa chỉ":    ["địa chỉ", "dia chi", "address", "nơi ở", "noi o"],
     "Dân tộc":    ["dân tộc", "dan toc", "ethnicity"],
     "Mã HS":      ["mã hs", "ma hs", "mã học sinh", "ma hoc sinh", "student id", "id"],
@@ -18,8 +19,8 @@ COLUMN_ALIASES = {
     "Email":      ["email", "e-mail", "mail"],
 }
 
-# Thứ tự cột ưu tiên trong file output
-PRIORITY_COLS = ["Họ và tên", "Lớp mới", "Lớp", "Giới tính", "Ngày sinh"]
+PRIORITY_COLS = ["Họ và tên", "Lớp mới", "Giới tính", "Ngày sinh", "Lớp"]
+ALL_STANDARD   = [k for k in COLUMN_ALIASES if k != "Lớp mới"]  # dùng để map từ file
 
 
 def normalize(text: str) -> str:
@@ -29,7 +30,9 @@ def normalize(text: str) -> str:
 def map_column(col_name: str, threshold: int = 75):
     col_norm = normalize(col_name)
     for standard, aliases in COLUMN_ALIASES.items():
-        if col_norm in aliases or col_norm == normalize(standard):
+        if not aliases:
+            continue
+        if col_norm == normalize(standard) or col_norm in aliases:
             return standard
         result = process.extractOne(col_norm, aliases, scorer=fuzz.token_sort_ratio)
         if result and result[1] >= threshold:
@@ -40,74 +43,76 @@ def map_column(col_name: str, threshold: int = 75):
 def detect_header_row(df_raw: pd.DataFrame, max_scan: int = 10) -> int:
     best_row, best_score = 0, 0
     for i in range(min(max_scan, len(df_raw))):
-        row = df_raw.iloc[i]
-        score = sum(1 for v in row if map_column(str(v)) is not None)
+        score = sum(1 for v in df_raw.iloc[i] if map_column(str(v)) is not None)
         if score > best_score:
             best_score, best_row = score, i
     return best_row
 
 
-def dedup_columns(cols):
-    """Đổi tên cột trùng thành col, col_2, col_3, ..."""
-    seen = {}
-    result = []
-    for c in cols:
-        if c not in seen:
-            seen[c] = 0
-            result.append(c)
-        else:
-            seen[c] += 1
-            result.append(f"{c}_{seen[c] + 1}")
-    return result
+def safe_str(series: pd.Series) -> pd.Series:
+    """Ép Series bất kỳ kiểu về str, thay NaN/NaT bằng chuỗi rỗng."""
+    return series.astype(str).replace({"nan": "", "NaT": "", "None": ""})
 
 
-def fmt_date(val):
-    if pd.isna(val) or str(val).strip() in ("", "nan"):
+def fmt_date(val: str) -> str:
+    if not val or val.strip() == "":
         return ""
-    if hasattr(val, "strftime"):
-        return val.strftime("%d/%m/%Y")
     try:
         return pd.to_datetime(val, dayfirst=True).strftime("%d/%m/%Y")
     except Exception:
-        return str(val)
+        return val
 
 
 def read_sheet_smart(xl: pd.ExcelFile, sheet_name: str) -> pd.DataFrame:
     df_raw = xl.parse(sheet_name, header=None)
     header_row = detect_header_row(df_raw)
-
     df = xl.parse(sheet_name, header=header_row)
-    df.columns = [str(c).strip() for c in df.columns]
 
-    # Đổi tên cột sang tên chuẩn (mỗi chuẩn chỉ map 1 lần, tránh trùng)
-    rename_map = {}
-    used_standards = set()
-    for col in df.columns:
-        standard = map_column(col)
-        if standard and standard not in used_standards:
-            rename_map[col] = standard
-            used_standards.add(standard)
+    # Chuẩn hoá tên cột gốc thành str
+    raw_cols = [str(c).strip() for c in df.columns]
 
-    df = df.rename(columns=rename_map)
+    # Map sang tên chuẩn; mỗi tên chuẩn chỉ được dùng 1 lần
+    used: set[str] = set()
+    new_cols: list[str] = []
+    for col in raw_cols:
+        std = map_column(col)
+        if std and std not in used:
+            new_cols.append(std)
+            used.add(std)
+        else:
+            new_cols.append(col)  # giữ nguyên tên gốc nếu không map hoặc đã dùng
 
-    # Xử lý tên cột trùng sau rename
-    df.columns = dedup_columns(list(df.columns))
+    df.columns = new_cols
 
+    # Xử lý trùng tên (đặt hậu tố _2, _3, …)
+    seen: dict[str, int] = {}
+    final_cols: list[str] = []
+    for c in df.columns:
+        if c not in seen:
+            seen[c] = 0
+            final_cols.append(c)
+        else:
+            seen[c] += 1
+            final_cols.append(f"{c}_{seen[c] + 1}")
+    df.columns = final_cols
+
+    # Gán tên sheet
     df["__sheet__"] = sheet_name
+
+    # Bỏ hàng trống hoàn toàn
     df = df.dropna(how="all")
 
-    # Ép object → str để tránh mixed-type lỗi PyArrow
+    # Ép TẤT CẢ cột về str ngay tại đây — loại bỏ mọi kiểu phức tạp
     for col in df.columns:
-        if df[col].dtype == object:
-            df[col] = df[col].astype(str).replace("nan", "")
+        df[col] = safe_str(df[col])
 
     return df
 
 
-def merge_sheets(file_bytes):
+def merge_sheets(file_bytes) -> tuple[pd.DataFrame, list[str]]:
     xl = pd.ExcelFile(file_bytes)
-    logs = []
-    frames = []
+    logs: list[str] = []
+    frames: list[pd.DataFrame] = []
 
     for sheet in xl.sheet_names:
         try:
@@ -120,60 +125,62 @@ def merge_sheets(file_bytes):
     if not frames:
         return pd.DataFrame(), logs
 
+    # Concat — tất cả cột đã là str nên không có mixed-type
     merged = pd.concat(frames, ignore_index=True, sort=False)
 
-    # Dedup tên cột sau concat (các sheet khác nhau có thể tạo cột trùng)
-    merged.columns = dedup_columns(list(merged.columns))
+    # Xử lý trùng tên cột sau concat (phòng trường hợp các sheet đặt tên khác nhau)
+    seen: dict[str, int] = {}
+    deduped: list[str] = []
+    for c in merged.columns:
+        if c not in seen:
+            seen[c] = 0
+            deduped.append(c)
+        else:
+            seen[c] += 1
+            deduped.append(f"{c}_{seen[c] + 1}")
+    merged.columns = deduped
 
-    # Ép tất cả cột không phải số về str để tránh mixed-type / datetime lỗi PyArrow
-    for col in merged.columns:
-        if merged[col].dtype == object or str(merged[col].dtype).startswith("datetime"):
-            merged[col] = merged[col].astype(str).replace("nan", "").replace("NaT", "")
+    # Tạo cột "Lớp mới" từ tên sheet
+    merged["Lớp mới"] = merged["__sheet__"] if "__sheet__" in merged.columns else ""
+
+    # Đảm bảo "Giới tính" luôn tồn tại
+    if "Giới tính" not in merged.columns:
+        merged["Giới tính"] = ""
 
     # Định dạng Ngày sinh → dd/mm/yyyy
     if "Ngày sinh" in merged.columns:
         merged["Ngày sinh"] = merged["Ngày sinh"].apply(fmt_date)
 
-    # Tạo cột "Lớp mới" từ tên sheet (lưu trong __sheet__)
-    if "__sheet__" in merged.columns:
-        merged["Lớp mới"] = merged["__sheet__"]
-    else:
-        merged["Lớp mới"] = ""
-
-    # Đảm bảo cột Giới tính luôn tồn tại
-    if "Giới tính" not in merged.columns:
-        merged["Giới tính"] = ""
-
-    # Sắp xếp cột: priority → chuẩn còn lại → cột khác
-    all_standard = list(COLUMN_ALIASES.keys())
+    # Sắp xếp cột đầu ra
     present_priority = [c for c in PRIORITY_COLS if c in merged.columns]
-    remaining_standard = [c for c in all_standard if c not in PRIORITY_COLS and c in merged.columns]
-    other_cols = [c for c in merged.columns if c not in all_standard and c != "__sheet__"]
+    remaining_std    = [c for c in ALL_STANDARD if c not in PRIORITY_COLS and c in merged.columns]
+    other_cols       = [c for c in merged.columns
+                        if c not in PRIORITY_COLS and c not in ALL_STANDARD and c != "__sheet__"]
+    merged = merged[present_priority + remaining_std + other_cols]
 
-    final_order = present_priority + remaining_standard + other_cols
-    if "__sheet__" in merged.columns:
-        final_order.append("__sheet__")
+    # Đảm bảo không còn duplicate trước khi trả về
+    assert merged.columns.duplicated().sum() == 0, \
+        f"Vẫn còn cột trùng: {list(merged.columns[merged.columns.duplicated()])}"
 
-    merged = merged[final_order]
     return merged, logs
 
 
 # ─── Giao diện Streamlit ───────────────────────────────────────────────────────
-st.set_page_config(page_title="Gộp Sheet Excel", page_icon="📊", layout="centered")
-st.title("📊 Gộp nhiều Sheet Excel thành 1")
-st.caption("Tự động nhận diện & chuẩn hoá cột: Họ và tên, Lớp, Giới tính, Ngày sinh…")
+st.set_page_config(page_title="Gộp Sheet Excel", page_icon="🐍", layout="centered")
+st.title("🙃 Gộp nhiều Sheet trong 1 file Excel")
+st.caption("Tự động nhận diện & chuẩn hoá cột: Họ và tên, Lớp mới, Giới tính, Ngày sinh, Lớp…")
 
 uploaded = st.file_uploader("⬆️ Tải lên file Excel (.xlsx)", type=["xlsx", "xls"])
 
 if uploaded:
-    base_name = os.path.splitext(uploaded.name)[0]
+    base_name   = os.path.splitext(uploaded.name)[0]
     output_name = f"{base_name}_đã gộp.xlsx"
 
-    st.info(f"📂 File: **{uploaded.name}** — File đầu ra sẽ là: **{output_name}**")
+    st.info(f"📂 File: **{uploaded.name}** — File đầu ra: **{output_name}**")
 
     with st.spinner("Đang xử lý…"):
-        file_bytes = uploaded.read()
-        merged_df, logs = merge_sheets(io.BytesIO(file_bytes))
+        file_bytes        = uploaded.read()
+        merged_df, logs   = merge_sheets(io.BytesIO(file_bytes))
 
     with st.expander("🔍 Chi tiết từng sheet", expanded=False):
         for log in logs:
@@ -182,14 +189,12 @@ if uploaded:
     if merged_df.empty:
         st.error("Không đọc được dữ liệu từ file. Vui lòng kiểm tra lại.")
     else:
-        display_df = merged_df.drop(columns=["__sheet__"], errors="ignore")
-
-        st.success(f"✅ Gộp thành công **{len(display_df)} dòng**, **{len(display_df.columns)} cột**")
-        st.dataframe(display_df, use_container_width=True)
+        st.success(f"✅ Gộp thành công **{len(merged_df)} dòng**, **{len(merged_df.columns)} cột**")
+        st.dataframe(merged_df, use_container_width=True)
 
         buf = io.BytesIO()
         with pd.ExcelWriter(buf, engine="openpyxl") as writer:
-            display_df.to_excel(writer, index=False, sheet_name="Đã gộp")
+            merged_df.to_excel(writer, index=False, sheet_name="Đã gộp")
         buf.seek(0)
 
         st.download_button(
